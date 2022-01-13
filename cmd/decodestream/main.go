@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -26,12 +27,12 @@ func (s KVStream) ReadSize() (int, error) {
 }
 
 func (s KVStream) ReadValueSize() (int, error) {
-	buf := [8]byte{}
+	buf := [4]byte{}
 	_, err := s.read.Read(buf[:])
 	if err != nil {
 		return 0, err
 	}
-	return int(binary.LittleEndian.Uint64(buf[:])), nil
+	return int(binary.LittleEndian.Uint32(buf[:])), nil
 }
 
 func (s KVStream) ReadChunk(chunk *bytes.Buffer, keyLen int) error {
@@ -67,8 +68,9 @@ func RefineValue(value []byte) string {
 }
 
 var (
-	file   = pflag.String("file", "", "The file to parse.")
-	decode = pflag.Bool("decode", true, "Decode the table key.")
+	file    = pflag.String("file", "", "The file to parse.")
+	decode  = pflag.Bool("decode", true, "Decode the table key.")
+	useJSON = pflag.Bool("json", false, "Use Json format.")
 )
 
 func main() {
@@ -96,6 +98,14 @@ func main() {
 		} else {
 			hk = keyutils.ParseKeyForHuman(bKey)
 		}
-		fmt.Printf("%s => %s\n", hk.String(), RefineValue(value.Bytes()))
+		if *useJSON {
+			b, err := json.Marshal(hk)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Println(string(b))
+		} else {
+			fmt.Printf("%s => %s\n", hk.String(), RefineValue(value.Bytes()))
+		}
 	}
 }
