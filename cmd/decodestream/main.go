@@ -2,63 +2,27 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/pflag"
+	"github.com/tikv/pd/pkg/codec"
 	"github.com/yujuncen/km/pkg/keyutils"
 )
 
-type KVStream struct {
-	read io.Reader
-}
-
-func (s KVStream) ReadSize() (int, error) {
-	buf := [4]byte{}
-	_, err := s.read.Read(buf[:])
-	if err != nil {
-		return 0, err
-	}
-	return int(binary.LittleEndian.Uint32(buf[:])), nil
-}
-
-func (s KVStream) ReadValueSize() (int, error) {
-	buf := [4]byte{}
-	_, err := s.read.Read(buf[:])
-	if err != nil {
-		return 0, err
-	}
-	return int(binary.LittleEndian.Uint32(buf[:])), nil
-}
-
-func (s KVStream) ReadChunk(chunk *bytes.Buffer, keyLen int) error {
-	chunk.Reset()
-	chunk.Grow(keyLen)
-	_, err := chunk.ReadFrom(io.LimitReader(s.read, int64(keyLen)))
-	return err
-}
-
-func (s KVStream) ReadKeyValue(key, value *bytes.Buffer) error {
-	keyLen, err := s.ReadSize()
-	if err != nil {
-		return err
-	}
-	if err := s.ReadChunk(key, keyLen); err != nil {
-		return err
-	}
-	valueLen, err := s.ReadValueSize()
-	if err != nil {
-		return err
-	}
-	if err := s.ReadChunk(value, valueLen); err != nil {
-		return err
-	}
-	return nil
-}
+var (
+	cmd       = pflag.String("cmd", "decode", "the command for use.")
+	file      = pflag.String("file", "", "The file to parse.")
+	decode    = pflag.Bool("decode", true, "Decode the table key.")
+	useJSON   = pflag.Bool("json", false, "Use Json format.")
+	searchKey = pflag.BytesHex("search", nil, "The key for search. (used for `search` command.)")
+)
 
 func RefineValue(value []byte) string {
 	if len(value) > 32 {
@@ -67,30 +31,8 @@ func RefineValue(value []byte) string {
 	return hex.EncodeToString(value)
 }
 
-var (
-	file    = pflag.String("file", "", "The file to parse.")
-	decode  = pflag.Bool("decode", true, "Decode the table key.")
-	useJSON = pflag.Bool("json", false, "Use Json format.")
-)
-
-func main() {
-	pflag.Parse()
-
-	f, err := os.Open(*file)
-	if err != nil {
-		panic(err)
-	}
-	kvs := KVStream{read: f}
-	key := bytes.NewBuffer(nil)
-	value := bytes.NewBuffer(nil)
-	for {
-		err := kvs.ReadKeyValue(key, value)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Println("err: ", err)
-			}
-			return
-		}
+func decodeFile(kvs keyutils.KVStream) {
+	kvs.Iterate(func(key, value *bytes.Buffer) {
 		bKey := key.Bytes()
 		var hk keyutils.HumanKey
 		if *decode {
@@ -107,5 +49,53 @@ func main() {
 		} else {
 			fmt.Printf("%s => %s\n", hk.String(), RefineValue(value.Bytes()))
 		}
+	})
+}
+
+func search(db string) error {
+	target := *searchKey
+	if *decode {
+		target = codec.EncodeBytes(target)
+	}
+	return filepath.WalkDir(db, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d == nil {
+			return errors.New("nil entry: " + path)
+		}
+		if d.Type().IsRegular() && strings.HasSuffix(d.Name(), ".log") {
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			kvs := keyutils.NewStreamReader(f)
+			kvs.Iterate(func(key, value *bytes.Buffer) {
+				if bytes.Equal(key.Bytes()[:key.Len()-8], target) {
+					hk := keyutils.ParseKeyFromEncodedWithTS(key.Bytes())
+					fmt.Printf("Key: %s\nValue: %s", hk.String(), hex.EncodeToString(value.Bytes()))
+				}
+			})
+		}
+		return nil
+	})
+}
+
+func main() {
+	pflag.Parse()
+
+	switch *cmd {
+	case "decode":
+		f, err := os.Open(*file)
+		if err != nil {
+			panic(err)
+		}
+		decodeFile(keyutils.NewStreamReader(f))
+	case "search":
+		if err := search(*file); err != nil {
+			panic(err)
+		}
+	default:
+		panic("failed to decode the command.")
 	}
 }
