@@ -73,7 +73,7 @@ func search(db string) error {
 			kvs.Iterate(func(key, value *bytes.Buffer) {
 				if bytes.Equal(key.Bytes()[:key.Len()-8], target) {
 					hk := keyutils.ParseKeyFromEncodedWithTS(key.Bytes())
-					fmt.Printf("Key: %s\nValue: %s", hk.String(), hex.EncodeToString(value.Bytes()))
+					fmt.Printf("At File: %s\nKey: %s\nValue: %s\n", path, hk.String(), hex.EncodeToString(value.Bytes()))
 				}
 			})
 		}
